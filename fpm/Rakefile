@@ -1,0 +1,92 @@
+require 'rubygems'
+require 'fileutils'
+require "fpm"
+require "fpm/command"
+
+NAME = "fpm"
+INSTALL_PATH = "/usr/lib/#{NAME}"
+DEPS = []
+
+def inplace_edit(file, bak, &block)
+    old_stdout = $stdout
+    argf = ARGF.clone
+
+    argf.argv.replace [file]
+    argf.inplace_mode = bak
+    argf.lines do |line|
+        yield line
+    end
+
+    $stdout = old_stdout
+end
+
+file 'Gemfile' do |t|
+    File.open('Gemfile', 'w') { |file| 
+        file.puts "source 'https://rubygems.org/'"
+        file.puts "gem '#{NAME}'"
+    }
+end
+
+file 'vendor' => 'Gemfile' do |t|
+    puts "Fetching bundle"
+
+    system('bundle package')
+    system('bundle install --deployment --standalone --binstubs')
+
+    puts "Removing cache"
+    FileUtils.remove_dir('vendor/cache', true)
+end
+
+task :patch => 'vendor' do |t|
+    puts "Patching binaries"
+    Dir.glob('bin/*').each { |file|
+        inplace_edit file, '' do |line|
+            line = line.gsub(/\.\.\/\.\./, INSTALL_PATH)
+            line = line.gsub(/File\.expand_path '(.*?)', \_\_FILE\_\_/, "'\\1'")
+            print line
+        end
+    }
+end
+
+task :package => [:patch] do |t|
+    puts "Packing into deb"
+    # Fetching main gem specs
+    spec = Dir.glob("vendor/bundle/ruby/*/specifications/#{NAME}*.gemspec").shift
+    info = Gem::Specification::load(spec)
+    
+    arch = Dir.glob("**/*.so").empty? ? 'all' : 'native'
+    args = ['-s', 'dir', '-t', 'deb', '-d', 'ruby']
+    DEPS.each{ |dep|
+        args.push("-d", dep)
+    }
+    args += ['-n', info.name, '-v', "#{info.version}",
+             '--description', info.description,
+             '--url', info.homepage,
+             '--vendor', "#{info.authors[0]} <#{info.email}>",
+             '--deb-compression', 'xz', '-a', arch]
+
+    # Files to pack
+    Dir.glob('bin/*').each { |file|
+        name = file.gsub(/^bin\//, '')
+        args.push("#{file}=/usr/bin/#{name}")
+    }
+
+    args.push(".bundle/=#{INSTALL_PATH}/.bundle")
+    args.push("vendor/=#{INSTALL_PATH}/vendor")
+    args.push("Gemfile=#{INSTALL_PATH}/Gemfile")
+    args.push("Gemfile.lock=#{INSTALL_PATH}/Gemfile.lock")
+
+    puts args.inspect
+    FPM::Command.new([]).run(args)
+end
+
+task :clean do |t|
+    puts "Cleaning work directory"
+    FileUtils.remove_dir('.bundle', true)
+    FileUtils.remove_dir('bin', true)
+    FileUtils.remove_dir('vendor', true)
+    FileUtils.rm('Gemfile.lock', :force => true)
+    FileUtils.rm(Dir.glob('*.deb'), :force => true)
+end
+
+task :default => [:package]

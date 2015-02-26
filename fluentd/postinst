@@ -1,0 +1,61 @@
+#!/bin/sh
+# postinst script for fluentd
+#
+# see: dh_installdeb(1)
+
+set -e
+
+# summary of how this script can be called:
+#        * <postinst> `configure' <most-recently-configured-version>
+#        * <old-postinst> `abort-upgrade' <new version>
+#        * <conflictor's-postinst> `abort-remove' `in-favour' <package>
+#          <new-version>
+#        * <postinst> `abort-remove'
+#        * <deconfigured's-postinst> `abort-deconfigure' `in-favour'
+#          <failed-install-package> <version> `removing'
+#          <conflicting-package> <version>
+# for details, see http://www.debian.org/doc/debian-policy/ or
+# the debian-policy package
+
+case "$1" in
+    configure)
+        # Create dirs
+        mkdir -p /var/log/fluentd /var/lib/fluentd
+
+        [ -z "$FL_USER" ] && FL_USER="fluentd"
+        [ -z "$FL_GROUP" ] && FL_GROUP="fluentd"
+        if ! getent group "$FL_GROUP" > /dev/null 2>&1 ; then
+            addgroup --system "$FL_GROUP" --quiet
+        fi
+        if ! id $FL_USER > /dev/null 2>&1 ; then
+            adduser --system --home /var/lib/fluentd --no-create-home \
+                --ingroup "$FL_GROUP" --disabled-password --shell /bin/false \
+                "$FL_USER"
+        fi
+
+        # Set user permissions on /var/log/fluentd and /var/lib/fluentd
+        chown -R $FL_USER:$FL_GROUP /var/log/fluentd /var/lib/fluentd
+        chmod 755 /var/log/fluentd /var/lib/fluentd
+
+        # configuration files should not be modifiable by fluentd user, as this can be a security issue
+        chown -Rh root:root /etc/fluent/*
+        chmod 755 /etc/fluent
+        find /etc/fluent -type f -exec chmod 644 {} ';'
+        find /etc/fluent -type d -exec chmod 755 {} ';'
+    ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+    ;;
+
+    *)
+        echo "postinst called with unknown argument \`$1'" >&2
+        exit 1
+    ;;
+esac
+
+if [ -x "/etc/init.d/fluentd" ]; then
+        update-rc.d fluentd defaults >/dev/null
+        invoke-rc.d fluentd start || exit $?
+fi
+
+exit 0
